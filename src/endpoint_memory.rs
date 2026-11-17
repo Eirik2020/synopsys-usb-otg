@@ -30,33 +30,25 @@ impl EndpointBuffer {
         }
     }
 
-    pub fn read_packet(&mut self, mut buf: &mut [u8]) -> Result<usize> {
+    pub fn read_packet(&mut self, buf: &mut [u8]) -> Result<usize> {
         if !self.has_data {
             return Err(UsbError::WouldBlock);
         }
 
         let data_size = self.data_size as usize;
-
-        if buf.len() < data_size {
+        let (Some(out), Some(words)) = (
+            buf.get_mut(..data_size),
+            self.buffer.get(..(data_size + 3) / 4),
+        ) else {
             return Err(UsbError::BufferOverflow);
-        }
+        };
 
-        let mut index = 0;
-        let mut current_size = data_size;
-        while current_size >= 4 {
-            let word = self.buffer[index].get();
-            index += 1;
-
-            let bytes = word.to_ne_bytes();
-            buf[..4].copy_from_slice(&bytes);
-            buf = &mut buf[4..];
-
-            current_size -= 4;
-        }
-        if current_size > 0 {
-            let word = self.buffer[index].get();
-            let bytes = word.to_ne_bytes();
-            buf[..current_size].copy_from_slice(&bytes[..current_size]);
+        // Each word holds four bytes of the packet, the last one fewer.
+        for (chunk, word) in out.chunks_mut(4).zip(words) {
+            let bytes = word.get().to_ne_bytes();
+            for (byte, value) in chunk.iter_mut().zip(bytes) {
+                *byte = value;
+            }
         }
 
         self.has_data = false;
@@ -74,12 +66,10 @@ impl EndpointBuffer {
             return Err(UsbError::WouldBlock);
         }
 
-        if data_size as usize > self.capacity() {
+        let Some(words) = self.buffer.get(..(data_size as usize + 3) / 4) else {
             return Err(UsbError::BufferOverflow);
-        }
-
-        let words = (data_size as usize + 3) / 4;
-        fifo_read_into(usb, &self.buffer[..words]);
+        };
+        fifo_read_into(usb, words);
 
         self.is_setup = is_setup;
         self.data_size = data_size;
@@ -134,7 +124,13 @@ impl<USB: UsbPeripheral> EndpointMemoryAllocator<USB> {
         let size_words = (size + 3) / 4;
 
         let offset = self.next_free_offset;
-        if offset + size_words > self.memory.len() {
+        if size_words > self.memory.len().saturating_sub(offset) {
+            return Err(UsbError::EndpointMemoryOverflow);
+        }
+        // The receive FIFO grows with every OUT buffer (`configure_all` sizes
+        // it as their sum plus 30 words), so it must still fit beside the
+        // transmit FIFOs already placed.
+        if self.fifo_words_used() + size_words > USB::FIFO_DEPTH_WORDS {
             return Err(UsbError::EndpointMemoryOverflow);
         }
 
@@ -149,25 +145,37 @@ impl<USB: UsbPeripheral> EndpointMemoryAllocator<USB> {
     }
 
     pub fn allocate_tx_buffer(&mut self, ep_number: u8, size: usize) -> Result<()> {
-        let ep_number = ep_number as usize;
-        assert!(ep_number < self.tx_fifo_size_words.len());
-
-        if self.tx_fifo_size_words[ep_number] != 0 {
+        let Some(&allocated) = self.tx_fifo_size_words.get(ep_number as usize) else {
+            return Err(UsbError::InvalidEndpoint);
+        };
+        if allocated != 0 {
             return Err(UsbError::InvalidEndpoint);
         }
 
-        let used = 30
-            + self.total_rx_buffer_size_words() as usize
-            + self.tx_fifo_size_words.iter().sum::<u16>() as usize;
+        let used = self.fifo_words_used();
 
         let size_words = core::cmp::max((size + 3) / 4, 16);
         if (used + size_words) > USB::FIFO_DEPTH_WORDS {
             return Err(UsbError::EndpointMemoryOverflow);
         }
 
-        self.tx_fifo_size_words[ep_number] = size_words as u16;
+        if let Some(slot) = self.tx_fifo_size_words.get_mut(ep_number as usize) {
+            *slot = size_words as u16;
+        }
 
         Ok(())
+    }
+
+    /// The FIFO RAM in words that `configure_all` lays out for what is
+    /// allocated so far: the receive FIFO (OUT buffers plus 30 words) and
+    /// every transmit FIFO.
+    fn fifo_words_used(&self) -> usize {
+        30 + self.next_free_offset
+            + self
+                .tx_fifo_size_words
+                .iter()
+                .map(|&words| words as usize)
+                .sum::<usize>()
     }
 
     /// Returns the size of memory allocated for OUT endpoints in words
@@ -176,7 +184,10 @@ impl<USB: UsbPeripheral> EndpointMemoryAllocator<USB> {
     }
 
     pub fn tx_fifo_size_words(&self, ep_number: usize) -> u16 {
-        self.tx_fifo_size_words[ep_number]
+        self.tx_fifo_size_words
+            .get(ep_number)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn max_buffer_size_words(&self) -> usize {

@@ -78,7 +78,8 @@ impl EndpointIn {
                 16 => 0b10,
                 32 => 0b01,
                 64 => 0b00,
-                other => panic!("Unsupported EP0 size: {}", other),
+                // `alloc_ep` refuses any other EP0 size.
+                _ => 0b00,
             };
 
             let regs = self.usb.endpoint_in(self.index() as usize);
@@ -184,7 +185,8 @@ impl EndpointOut {
                 16 => 0b10,
                 32 => 0b01,
                 64 => 0b00,
-                other => panic!("Unsupported EP0 size: {}", other),
+                // `alloc_ep` refuses any other EP0 size.
+                _ => 0b00,
             };
 
             let regs = self.usb.endpoint0_out();
@@ -219,11 +221,17 @@ impl EndpointOut {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        interrupt::free(|cs| self.buffer.borrow(cs).borrow_mut().read_packet(buf))
+        interrupt::free(|cs| match self.buffer.borrow(cs).try_borrow_mut() {
+            Ok(mut buffer) => buffer.read_packet(buf),
+            Err(_) => Err(UsbError::WouldBlock),
+        })
     }
 
     pub fn buffer_state(&self) -> EndpointBufferState {
-        interrupt::free(|cs| self.buffer.borrow(cs).borrow().state())
+        interrupt::free(|cs| match self.buffer.borrow(cs).try_borrow() {
+            Ok(buffer) => buffer.state(),
+            Err(_) => EndpointBufferState::Empty,
+        })
     }
 }
 

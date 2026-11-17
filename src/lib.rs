@@ -16,7 +16,7 @@ mod target;
 /// USB peripheral driver.
 pub mod bus;
 
-pub use crate::bus::UsbBus;
+pub use crate::bus::{InterruptHandle, UsbBus, Waiting};
 
 mod ral;
 mod transition;

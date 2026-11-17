@@ -14,18 +14,35 @@ use crate::ral::{
 };
 use crate::UsbPeripheral;
 
-pub fn fifo_write(usb: UsbRegisters, channel: impl Into<usize>, mut buf: &[u8]) {
+/// The most register reads a wait on the core makes before giving up. The
+/// core's self-clearing bits (GRSTCTL's CSRST, RXFFLSH and TXFFLSH) clear in
+/// "several clocks", RXFFLSH in 8 of the slower of the PHY and AHB clocks
+/// (RM0368 22.16.2, OTG_FS_GRSTCTL; RM0433 57.14.5, OTG_GRSTCTL), and every read
+/// of a core register is one AHB transfer, so this is thousands of times the
+/// longest wait the manuals state while staying well under a millisecond.
+pub const SPIN_LIMIT: u32 = 10_000;
+
+/// Reads until `done` holds, at most [`SPIN_LIMIT`] times. Says whether it
+/// held: a core that never clears its bit leaves the caller to go on, never
+/// to hang.
+pub fn spin_until(mut done: impl FnMut() -> bool) -> bool {
+    for _ in 0..SPIN_LIMIT {
+        if done() {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn fifo_write(usb: UsbRegisters, channel: impl Into<usize>, buf: &[u8]) {
     let fifo = usb.fifo(channel.into());
 
-    while buf.len() >= 4 {
+    // Four bytes to a word, the last word padded with zeros.
+    for chunk in buf.chunks(4) {
         let mut u32_bytes = [0u8; 4];
-        u32_bytes.copy_from_slice(&buf[..4]);
-        buf = &buf[4..];
-        fifo.write(u32::from_ne_bytes(u32_bytes));
-    }
-    if !buf.is_empty() {
-        let mut u32_bytes = [0u8; 4];
-        u32_bytes[..buf.len()].copy_from_slice(buf);
+        for (byte, value) in u32_bytes.iter_mut().zip(chunk) {
+            *byte = *value;
+        }
         fifo.write(u32::from_ne_bytes(u32_bytes));
     }
 }
@@ -66,8 +83,9 @@ impl UsbRegisters {
 
     #[inline(always)]
     pub fn fifo(&self, channel: usize) -> &'static RWRegister<u32> {
-        assert!(channel <= 15);
-        let address = self.0 + 0x1000 + channel * 0x1000;
+        // Sixteen FIFO windows; callers pass an endpoint number below
+        // `ENDPOINT_COUNT`, so the mask only keeps the address in the block.
+        let address = self.0 + 0x1000 + (channel & 0xf) * 0x1000;
         unsafe { &*(address as *const RWRegister<u32>) }
     }
 
