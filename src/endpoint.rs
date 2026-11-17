@@ -139,6 +139,20 @@ impl EndpointIn {
         #[cfg(feature = "hs")]
         write_reg!(endpoint_in, ep, DIEPTSIZ, MCNT: 1, PKTCNT: 1, XFRSIZ: buf.len() as u32);
 
+        // STM32H7 errata ES0392 2.25.7: on the OTG_HS cores, enabling an IN
+        // endpoint for a zero-length packet together with CNAK can put a
+        // wrong data packet on the bus. The sheet's slave-mode sequence:
+        // SNAK, 20 AHB clocks, EPENA, 15 more, then CNAK.
+        #[cfg(feature = "hs")]
+        if buf.is_empty() {
+            modify_reg!(endpoint_in, ep, DIEPCTL, SNAK: 1, CNAK: 0);
+            ahb_clocks(ep, 20);
+            modify_reg!(endpoint_in, ep, DIEPCTL, EPENA: 1);
+            ahb_clocks(ep, 15);
+            modify_reg!(endpoint_in, ep, DIEPCTL, SNAK: 0, CNAK: 1);
+            return Ok(());
+        }
+
         modify_reg!(endpoint_in, ep, DIEPCTL, CNAK: 1, EPENA: 1);
 
         fifo_write(self.usb, self.index(), buf);
@@ -238,5 +252,14 @@ impl Deref for EndpointOut {
 impl DerefMut for EndpointOut {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.common
+    }
+}
+
+/// At least `n` AHB clocks: every read of a core register is one AHB transfer
+/// of one clock or more, whatever the CPU clock is.
+#[cfg(feature = "hs")]
+fn ahb_clocks(ep: &endpoint_in::RegisterBlock, n: u32) {
+    for _ in 0..n {
+        let _ = read_reg!(endpoint_in, ep, DIEPCTL);
     }
 }
