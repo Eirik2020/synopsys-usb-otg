@@ -27,3 +27,7 @@ xcvrdly = []
 # DWT cycles, in `CRITICAL_SECTION_MAX_CYCLES`. The caller enables the DWT
 # cycle counter.
 measure-critical-section = ["cortex-m"]
+# PROTOTYPE: write IN packets without the critical section, for a caller that
+# keeps every other access to the core out of the write itself (an RTIC lock
+# at the vector's priority). Bench use only: it drops ES0182 2.14.1's cover.
+no-fifo-critical-section = []

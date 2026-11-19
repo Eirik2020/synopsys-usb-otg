@@ -141,7 +141,7 @@ impl EndpointIn {
         // from its own priority, so the whole sequence, from DIEPTSIZ to the
         // last FIFO word, runs in one critical section: at most 16 word
         // writes for a full-speed packet.
-        interrupt::free(|_| {
+        guarded(|| {
             #[cfg(feature = "measure-critical-section")]
             let started = cortex_m::peripheral::DWT::cycle_count();
             #[cfg(feature = "fs")]
@@ -176,6 +176,19 @@ impl EndpointIn {
             Ok(())
         })
     }
+}
+
+/// Runs an IN packet write: inside a critical section, unless the
+/// PROTOTYPE `no-fifo-critical-section` feature leaves exclusion to the
+/// caller.
+#[cfg(not(feature = "no-fifo-critical-section"))]
+fn guarded<R>(f: impl FnOnce() -> R) -> R {
+    interrupt::free(|_| f())
+}
+
+#[cfg(feature = "no-fifo-critical-section")]
+fn guarded<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }
 
 pub struct EndpointOut {
