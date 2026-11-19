@@ -20,6 +20,7 @@ pub struct UsbBus<USB> {
     regs: Mutex<UsbRegisters>,
     allocator: EndpointAllocator<USB>,
     deferred: bool,
+    heartbeat: bool,
 }
 
 // GINTSTS and GINTMSK share their bit positions (RM0368 22.16.2,
@@ -66,6 +67,7 @@ impl<USB: UsbPeripheral> UsbBus<USB> {
             regs: Mutex::new(UsbRegisters::new::<USB>()),
             allocator: EndpointAllocator::new(ep_memory),
             deferred: false,
+            heartbeat: false,
         }
     }
 
@@ -77,6 +79,7 @@ impl<USB: UsbPeripheral> UsbBus<USB> {
     ) -> (Self, InterruptHandle<USB>) {
         let mut bus = Self::bus(peripheral, ep_memory);
         bus.deferred = true;
+        bus.heartbeat = true;
         let handle = InterruptHandle {
             regs: UsbRegisters::new::<USB>(),
             _marker: PhantomData,
@@ -84,9 +87,22 @@ impl<USB: UsbPeripheral> UsbBus<USB> {
         (bus, handle)
     }
 
+    /// As [`deferred_bus`](Self::deferred_bus), but with the start-of-frame
+    /// heartbeat masked: for a caller whose wake cannot be dropped (a
+    /// signal that holds until its task reads it), where a repeat every
+    /// frame would only cost a vector entry each millisecond.
+    pub fn deferred_bus_without_heartbeat(
+        peripheral: USB,
+        ep_memory: &'static mut [u32],
+    ) -> (Self, InterruptHandle<USB>) {
+        let (mut bus, handle) = Self::deferred_bus(peripheral, ep_memory);
+        bus.heartbeat = false;
+        (bus, handle)
+    }
+
     /// The interrupts this driver keeps unmasked when nothing is waiting.
     fn armed(&self) -> u32 {
-        if self.deferred {
+        if self.deferred && self.heartbeat {
             SERVED | SOF
         } else {
             SERVED
