@@ -23,3 +23,7 @@ features = ['cortex-m', 'fs']
 hs = []
 fs = []
 xcvrdly = []
+# PROTOTYPE bench instrumentation: the longest IN-write critical section, in
+# DWT cycles, in `CRITICAL_SECTION_MAX_CYCLES`. The caller enables the DWT
+# cycle counter.
+measure-critical-section = ["cortex-m"]

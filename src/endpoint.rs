@@ -142,6 +142,8 @@ impl EndpointIn {
         // last FIFO word, runs in one critical section: at most 16 word
         // writes for a full-speed packet.
         interrupt::free(|_| {
+            #[cfg(feature = "measure-critical-section")]
+            let started = cortex_m::peripheral::DWT::cycle_count();
             #[cfg(feature = "fs")]
             write_reg!(endpoint_in, ep, DIEPTSIZ, PKTCNT: 1, XFRSIZ: buf.len() as u32);
             #[cfg(feature = "hs")]
@@ -164,6 +166,12 @@ impl EndpointIn {
             modify_reg!(endpoint_in, ep, DIEPCTL, CNAK: 1, EPENA: 1);
 
             fifo_write(self.usb, self.index(), buf);
+
+            #[cfg(feature = "measure-critical-section")]
+            crate::CRITICAL_SECTION_MAX_CYCLES.fetch_max(
+                cortex_m::peripheral::DWT::cycle_count().wrapping_sub(started),
+                core::sync::atomic::Ordering::Relaxed,
+            );
 
             Ok(())
         })
