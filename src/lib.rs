@@ -18,12 +18,6 @@ pub mod bus;
 
 pub use crate::bus::{InterruptHandle, UsbBus, Waiting};
 
-/// PROTOTYPE bench instrumentation: the longest critical section an IN
-/// packet write has taken, in DWT cycles (`measure-critical-section`).
-#[cfg(feature = "measure-critical-section")]
-pub static CRITICAL_SECTION_MAX_CYCLES: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-
 mod ral;
 mod transition;
 

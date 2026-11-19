@@ -51,6 +51,16 @@ impl<USB: UsbPeripheral> UsbBus<USB> {
     /// interrupt stays unmasked as a heartbeat: every frame (1 ms on a
     /// full-speed bus) the handle reports what is still waiting for a `poll`,
     /// so a wake the scheduler dropped is repeated, not lost.
+    ///
+    /// # Rule of use
+    ///
+    /// The handle reads GINTSTS and writes GINTMSK. On cores with the
+    /// transmit FIFO erratum (STM32F40x/41x ES0182 2.14.1 and its twins),
+    /// a register access that cuts into an IN packet's FIFO write corrupts
+    /// the FIFO. The handle and every `UsbBus` and endpoint call must
+    /// therefore never preempt one another: call them from one context, or
+    /// under one lock taken at the vector's priority. The driver takes no
+    /// critical section of its own for this.
     pub fn new_deferred(
         peripheral: USB,
         ep_memory: &'static mut [u32],

@@ -135,60 +135,31 @@ impl EndpointIn {
             }
         }
 
-        // STM32F40x/41x errata ES0182 2.14.1: the transmit FIFO is
-        // corrupted when another OTG_FS register access cuts into a write
-        // sequence to it. A deferred vector reads GINTSTS and writes GINTMSK
-        // from its own priority, so the whole sequence, from DIEPTSIZ to the
-        // last FIFO word, runs in one critical section: at most 16 word
-        // writes for a full-speed packet.
-        guarded(|| {
-            #[cfg(feature = "measure-critical-section")]
-            let started = cortex_m::peripheral::DWT::cycle_count();
-            #[cfg(feature = "fs")]
-            write_reg!(endpoint_in, ep, DIEPTSIZ, PKTCNT: 1, XFRSIZ: buf.len() as u32);
-            #[cfg(feature = "hs")]
-            write_reg!(endpoint_in, ep, DIEPTSIZ, MCNT: 1, PKTCNT: 1, XFRSIZ: buf.len() as u32);
+        #[cfg(feature = "fs")]
+        write_reg!(endpoint_in, ep, DIEPTSIZ, PKTCNT: 1, XFRSIZ: buf.len() as u32);
+        #[cfg(feature = "hs")]
+        write_reg!(endpoint_in, ep, DIEPTSIZ, MCNT: 1, PKTCNT: 1, XFRSIZ: buf.len() as u32);
 
-            // STM32H7 errata ES0392 2.25.7: on the OTG_HS cores, enabling an IN
-            // endpoint for a zero-length packet together with CNAK can put a
-            // wrong data packet on the bus. The sheet's slave-mode sequence:
-            // SNAK, 20 AHB clocks, EPENA, 15 more, then CNAK.
-            #[cfg(feature = "hs")]
-            if buf.is_empty() {
-                modify_reg!(endpoint_in, ep, DIEPCTL, SNAK: 1, CNAK: 0);
-                ahb_clocks(ep, 20);
-                modify_reg!(endpoint_in, ep, DIEPCTL, EPENA: 1);
-                ahb_clocks(ep, 15);
-                modify_reg!(endpoint_in, ep, DIEPCTL, SNAK: 0, CNAK: 1);
-                return Ok(());
-            }
+        // STM32H7 errata ES0392 2.25.7: on the OTG_HS cores, enabling an IN
+        // endpoint for a zero-length packet together with CNAK can put a
+        // wrong data packet on the bus. The sheet's slave-mode sequence:
+        // SNAK, 20 AHB clocks, EPENA, 15 more, then CNAK.
+        #[cfg(feature = "hs")]
+        if buf.is_empty() {
+            modify_reg!(endpoint_in, ep, DIEPCTL, SNAK: 1, CNAK: 0);
+            ahb_clocks(ep, 20);
+            modify_reg!(endpoint_in, ep, DIEPCTL, EPENA: 1);
+            ahb_clocks(ep, 15);
+            modify_reg!(endpoint_in, ep, DIEPCTL, SNAK: 0, CNAK: 1);
+            return Ok(());
+        }
 
-            modify_reg!(endpoint_in, ep, DIEPCTL, CNAK: 1, EPENA: 1);
+        modify_reg!(endpoint_in, ep, DIEPCTL, CNAK: 1, EPENA: 1);
 
-            fifo_write(self.usb, self.index(), buf);
+        fifo_write(self.usb, self.index(), buf);
 
-            #[cfg(feature = "measure-critical-section")]
-            crate::CRITICAL_SECTION_MAX_CYCLES.fetch_max(
-                cortex_m::peripheral::DWT::cycle_count().wrapping_sub(started),
-                core::sync::atomic::Ordering::Relaxed,
-            );
-
-            Ok(())
-        })
+        Ok(())
     }
-}
-
-/// Runs an IN packet write: inside a critical section, unless the
-/// PROTOTYPE `no-fifo-critical-section` feature leaves exclusion to the
-/// caller.
-#[cfg(not(feature = "no-fifo-critical-section"))]
-fn guarded<R>(f: impl FnOnce() -> R) -> R {
-    interrupt::free(|_| f())
-}
-
-#[cfg(feature = "no-fifo-critical-section")]
-fn guarded<R>(f: impl FnOnce() -> R) -> R {
-    f()
 }
 
 pub struct EndpointOut {
